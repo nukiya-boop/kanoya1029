@@ -15,18 +15,21 @@ OUT = os.path.join(ROOT, "reel", "kasuga_forest_reel.mp4")
 
 W, H, FPS, DURATION = 1080, 1920, 30, 30.0
 GOLD = (201, 169, 110)
-FONT = "/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf"
+FONT_DIR = os.path.join(ROOT, "reel", "fonts")
+FONT_JP = os.path.join(FONT_DIR, "ShipporiMincho-Medium.ttf")
+FONT_EN = os.path.join(FONT_DIR, "CormorantGaramond[wght].ttf")
+FONT_EN_IT = os.path.join(FONT_DIR, "CormorantGaramond-Italic[wght].ttf")
 
-# (ファイル, 表示秒数, コピー, 次へのトランジション)
+# (ファイル, 表示秒数, 和文コピー, 英文サブコピー, 次へのトランジション)
 SLIDES = [
-    ("S__63709238_0.jpg", 4.3, ["春日の森へ"], "dissolve"),
-    ("S__63709241_0.jpg", 4.3, [], "slide_up"),
-    ("S__63709239_0.jpg", 4.3, ["深い緑に、", "夜がおりてくる"], "dip_black"),
-    ("IMG_0258.jpg", 4.3, ["千年の杜に", "灯がともる"], "zoom_dissolve"),
-    ("IMG_0261.jpg", 4.3, [], "light_sweep"),
-    ("S__63709242_0.jpg", 4.3, ["静けさを、まとう"], "dip_black"),
-    ("S__63709243_0.jpg", 4.3, [], "iris"),
-    ("S__63709244_0.jpg", 6.9, ["森を眺めて眠る、", "ひとときを。"], None),
+    ("S__63709238_0.jpg", 4.3, ["春日の森へ"], "Into the forest of Kasuga", "dissolve"),
+    ("S__63709241_0.jpg", 4.3, [], None, "slide_up"),
+    ("S__63709239_0.jpg", 4.3, ["深い緑に、", "夜がおりてくる"], "Night settles on deep green", "dip_black"),
+    ("IMG_0258.jpg", 4.3, ["千年の杜に", "灯がともる"], "Lanterns in an ancient grove", "zoom_dissolve"),
+    ("IMG_0261.jpg", 4.3, [], None, "light_sweep"),
+    ("S__63709242_0.jpg", 4.3, ["静けさを、まとう"], "Wrapped in stillness", "dip_black"),
+    ("S__63709243_0.jpg", 4.3, [], None, "iris"),
+    ("S__63709244_0.jpg", 6.9, ["森を眺めて眠る、", "ひとときを。"], "Sleep beside the forest", None),
 ]
 TRANS = 1.0  # トランジション秒数（前後スライドが重なる時間）
 
@@ -34,8 +37,85 @@ BOX_W, BOX_H = 940, 1300  # メイン画像の最大表示枠（画像は切ら�
 CENTER_Y = 840
 
 
-def font(size):
-    return ImageFont.truetype(FONT, size)
+_FONTS = {}
+
+
+def font(path, size, weight=None):
+    key = (path, size, weight)
+    if key not in _FONTS:
+        f = ImageFont.truetype(path, size)
+        if weight:
+            f.set_variation_by_axes([weight])
+        _FONTS[key] = f
+    return _FONTS[key]
+
+
+GOLD_TOP = np.array([236, 214, 164], dtype=np.float32)
+GOLD_BOTTOM = np.array([176, 140, 82], dtype=np.float32)
+CREAM = (238, 230, 212)
+_GLYPHS = {}
+
+
+def glyph(ch, f, gold=True):
+    """1文字分の RGBA タイル（金のグラデーション＋柔らかい影）。"""
+    key = (ch, id(f), gold)
+    if key in _GLYPHS:
+        return _GLYPHS[key]
+    asc, desc = f.getmetrics()
+    pad = 12
+    w = int(math.ceil(f.getlength(ch))) + pad * 2
+    h = asc + desc + pad * 2
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).text((pad, pad), ch, font=f, fill=255)
+    m = np.asarray(mask, dtype=np.float32) / 255.0
+    if gold:
+        g = np.linspace(0, 1, h)[:, None, None]
+        rgb = GOLD_TOP * (1 - g) + GOLD_BOTTOM * g
+        rgb = np.broadcast_to(rgb, (h, w, 3))
+    else:
+        rgb = np.broadcast_to(np.array(CREAM, dtype=np.float32), (h, w, 3))
+    shadow = np.asarray(mask.filter(ImageFilter.GaussianBlur(6)), dtype=np.float32) / 255.0
+    # 影(黒)の上に文字を合成
+    sa = np.clip(shadow * 0.75, 0, 1)
+    out_a = m + sa * (1 - m)
+    out_rgb = rgb * m[..., None] / np.maximum(out_a, 1e-6)[..., None]
+    tile = np.dstack([np.clip(out_rgb, 0, 255), out_a * 255]).astype(np.uint8)
+    res = (Image.fromarray(tile, "RGBA"), pad, w - pad * 2)
+    _GLYPHS[key] = res
+    return res
+
+
+def draw_line(layer, text, f, cx, y, tracking, t, start, stagger, gold=True, fade=0.7, rise=14, alpha=1.0):
+    """1行を中央揃えで、1文字ずつふわっと浮かび上がらせる。"""
+    chars = list(text)
+    widths = [glyph(c, f, gold)[2] for c in chars]
+    total = sum(widths) + tracking * (len(chars) - 1)
+    x = cx - total / 2
+    for i, c in enumerate(chars):
+        tile, pad, adv = glyph(c, f, gold)
+        k = ease((t - start - i * stagger) / fade)
+        a = k * alpha
+        if a > 0.003 and c != " ":
+            tl = tile
+            if a < 0.999:
+                arr = np.asarray(tile).copy()
+                arr[..., 3] = (arr[..., 3] * a).astype(np.uint8)
+                tl = Image.fromarray(arr, "RGBA")
+            layer.alpha_composite(tl, (int(round(x - pad)), int(round(y - pad + rise * (1 - k)))))
+        x += adv + tracking
+    return len(chars) * stagger + fade
+
+
+def ornament(d, cx, y, k, alpha, half=90):
+    """中央の菱形から左右へ伸びる金の細線。"""
+    if alpha <= 0 or k <= 0:
+        return
+    col = (214, 188, 132, int(230 * alpha))
+    L = half * k
+    d.line([(cx - 12 - L, y), (cx - 12, y)], fill=col, width=1)
+    d.line([(cx + 12, y), (cx + 12 + L, y)], fill=col, width=1)
+    r = 4
+    d.polygon([(cx, y - r), (cx + r, y), (cx, y + r), (cx - r, y)], outline=col)
 
 
 def prepare(fname):
@@ -101,27 +181,27 @@ def render_slide(p, local_t, dur, extra_scale=1.0, dy=0):
     return canvas, (y + size[1] + pad)
 
 
-def draw_text(canvas, lines, local_t, dur, bottom):
+def draw_text(canvas, lines, en, local_t, dur, bottom):
     if not lines:
         return
-    a_in = ease((local_t - 0.6) / 1.2)
-    a_out = 1.0 - ease((local_t - (dur - 0.5)) / 0.6)
-    a = min(a_in, a_out)
-    if a <= 0:
+    out = 1.0 - ease((local_t - (dur - 0.7)) / 0.7)
+    if out <= 0 or local_t < 0.5:
         return
-    rise = int(18 * (1 - a_in))
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    f = font(50)
-    top = max(bottom + 70, 1290) + rise
-    # 飾り線
-    d.line([(W / 2 - 40, top), (W / 2 + 40, top)], fill=GOLD + (int(255 * a),), width=1)
-    yy = top + 40
+    top = max(bottom + 80, 1270)
+    ornament(d, W / 2, top, ease((local_t - 0.5) / 1.0), out)
+    f = font(FONT_JP, 54)
+    yy = top + 44
+    start = 0.75
     for line in lines:
-        spaced = " ".join(line)
-        tw = d.textlength(spaced, font=f)
-        d.text(((W - tw) / 2, yy), spaced, font=f, fill=(240, 232, 215, int(255 * a)))
-        yy += 82
+        draw_line(layer, line, f, W / 2, yy, 14, local_t, start, 0.07, alpha=out)
+        start += 0.07 * len(line) * 0.6
+        yy += 86
+    if en:
+        fe = font(FONT_EN_IT, 34, 400)
+        draw_line(layer, en, fe, W / 2, yy + 14, 2, local_t, start + 0.6, 0.0,
+                  gold=False, fade=1.2, rise=8, alpha=0.8 * out)
     canvas.paste(layer, (0, 0), layer)
 
 
@@ -135,19 +215,13 @@ def end_card(canvas, t_from_start):
     d = ImageDraw.Draw(layer)
     alpha = int(255 * a)
     # 公式サイト表記: 奈良春日 鹿のや / Nara Kasuga Kanoya
-    cy = 860
-    for txt, f, yy, color in [
-        ("奈良春日", font(40), cy - 120, (235, 228, 210)),
-        ("鹿のや", font(120), cy - 50, GOLD),
-    ]:
-        s = "\u2002".join(txt)
-        tw = d.textlength(s, font=f)
-        d.text(((W - tw) / 2, yy), s, font=f, fill=color + (alpha,))
-    d.line([(W / 2 - 70, cy + 120), (W / 2 + 70, cy + 120)], fill=GOLD + (alpha,), width=1)
-    s = "\u2009".join("Nara Kasuga Kanoya")
-    f3 = font(32)
-    tw = d.textlength(s, font=f3)
-    d.text(((W - tw) / 2, cy + 155), s, font=f3, fill=(235, 228, 210, alpha))
+    t = t_from_start
+    cy = 830
+    draw_line(layer, "奈良春日", font(FONT_JP, 40), W / 2, cy - 120, 22, t, 0.4, 0.1, gold=False)
+    draw_line(layer, "鹿のや", font(FONT_JP, 150), W / 2, cy - 60, 36, t, 0.8, 0.18, fade=1.0, rise=20)
+    ornament(d, W / 2, cy + 190, ease((t - 1.6) / 1.2), a, half=120)
+    draw_line(layer, "NARA KASUGA KANOYA", font(FONT_EN, 30, 500), W / 2, cy + 222, 9, t, 2.0, 0.0,
+              gold=False, fade=1.2, rise=6, alpha=0.85)
     canvas.paste(layer, (0, 0), layer)
     return canvas
 
@@ -171,7 +245,7 @@ def soft_mask(kind, k):
 def main():
     preps = [prepare(s[0]) for s in SLIDES]
     starts, t = [], 0.0
-    for _, dur, _, _ in SLIDES:
+    for _, dur, _, _, _ in SLIDES:
         starts.append(t)
         t += dur - TRANS
     total_frames = int(DURATION * FPS)
@@ -186,10 +260,10 @@ def main():
     ], stdin=subprocess.PIPE)
 
     def frame_of(i, t, **kw):
-        fname, dur, lines, _ = SLIDES[i]
+        fname, dur, lines, en, _ = SLIDES[i]
         lt = t - starts[i]
         c, bottom = render_slide(preps[i], lt, dur, **kw)
-        draw_text(c, lines, lt, 3.0 if i == len(SLIDES) - 1 else dur, bottom)
+        draw_text(c, lines, en, lt, 3.0 if i == len(SLIDES) - 1 else dur, bottom)
         if i == len(SLIDES) - 1:
             c = end_card(c, lt - 2.4)
         return c
@@ -203,7 +277,7 @@ def main():
             img = frame_of(cur, t)
         else:
             k = (t - starts[cur]) / TRANS
-            kind = SLIDES[prev][3]
+            kind = SLIDES[prev][4]
             if kind == "dip_black":
                 if k < 0.5:
                     img = Image.blend(frame_of(prev, t), Image.new("RGB", (W, H)), ease(k * 2))
