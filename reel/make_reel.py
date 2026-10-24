@@ -134,17 +134,20 @@ def end_card(canvas, t_from_start):
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     alpha = int(255 * a)
-    title = " ".join("KANOYA")
-    f1, f2, f3 = font(96), font(34), font(30)
-    tw = d.textlength(title, font=f1)
+    # 公式サイト表記: 奈良春日 鹿のや / Nara Kasuga Kanoya
     cy = 860
-    d.text(((W - tw) / 2, cy - 60), title, font=f1, fill=GOLD + (alpha,))
-    d.line([(W / 2 - 70, cy + 70), (W / 2 + 70, cy + 70)], fill=GOLD + (alpha,), width=1)
-    for txt, f, yy in [("奈良  春日の森に泊まる", f2, cy + 110),
-                       ("NARA  KASUGANO", f3, cy + 175)]:
-        s = " ".join(txt) if f is f3 else txt
+    for txt, f, yy, color in [
+        ("奈良春日", font(40), cy - 120, (235, 228, 210)),
+        ("鹿のや", font(120), cy - 50, GOLD),
+    ]:
+        s = "\u2002".join(txt)
         tw = d.textlength(s, font=f)
-        d.text(((W - tw) / 2, yy), s, font=f, fill=(235, 228, 210, alpha))
+        d.text(((W - tw) / 2, yy), s, font=f, fill=color + (alpha,))
+    d.line([(W / 2 - 70, cy + 120), (W / 2 + 70, cy + 120)], fill=GOLD + (alpha,), width=1)
+    s = "\u2009".join("Nara Kasuga Kanoya")
+    f3 = font(32)
+    tw = d.textlength(s, font=f3)
+    d.text(((W - tw) / 2, cy + 155), s, font=f3, fill=(235, 228, 210, alpha))
     canvas.paste(layer, (0, 0), layer)
     return canvas
 
